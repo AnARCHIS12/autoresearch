@@ -35,9 +35,22 @@ $GLOBALS['logs_dir']          = $dockan_volumes_dir && is_dir($dockan_volumes_di
     ? $dockan_volumes_dir . '/app_logs'
     : __DIR__ . '/logs';
 
+function default_mistral_endpoint(): string {
+    return 'https://api.mistral.ai/v1/chat/completions';
+}
+
+function normalize_mistral_endpoint(string $endpoint): string {
+    $endpoint = trim($endpoint) ?: default_mistral_endpoint();
+    $host = strtolower((string)(parse_url($endpoint, PHP_URL_HOST) ?? ''));
+    if ($host === 'codestral.mistral.ai') {
+        return default_mistral_endpoint();
+    }
+    return $endpoint;
+}
+
 function load_app_config(): array {
     $config = [
-        'endpoint' => 'https://api.mistral.ai/v1/chat/completions',
+        'endpoint' => default_mistral_endpoint(),
         'api_keys' => [],
     ];
 
@@ -51,7 +64,7 @@ function load_app_config(): array {
         $raw = file_get_contents($file);
         $saved = json_decode($raw ?: '', true);
         if (json_last_error() === JSON_ERROR_NONE && is_array($saved)) {
-            $config['endpoint'] = trim((string)($saved['endpoint'] ?? $config['endpoint'])) ?: $config['endpoint'];
+            $config['endpoint'] = normalize_mistral_endpoint((string)($saved['endpoint'] ?? $config['endpoint']));
             if (!empty($saved['api_keys']) && is_array($saved['api_keys'])) {
                 $config['api_keys'] = array_values(array_filter(array_map('trim', $saved['api_keys'])));
             }
@@ -63,7 +76,7 @@ function load_app_config(): array {
 
 function save_app_config(string $endpoint, string $api_keys_text, bool $clear_keys = false): array {
     $current = load_app_config();
-    $endpoint = trim($endpoint) ?: $current['endpoint'];
+    $endpoint = normalize_mistral_endpoint(trim($endpoint) ?: $current['endpoint']);
     if (!preg_match('/^https?:\/\/.+/i', $endpoint)) {
         return [false, "Endpoint invalide. Utilise une URL http(s)."];
     }
@@ -106,6 +119,19 @@ function mask_secret(string $value): string {
 function icon(string $name, string $extra_class = ''): string {
     $class = trim("fa-solid fa-{$name} icon {$extra_class}");
     return "<i class=\"{$class}\" aria-hidden=\"true\"></i>";
+}
+
+function ca_bundle_path(): string {
+    foreach ([
+        __DIR__ . '/.dockan/tls-ca-bundle.pem',
+        '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+        '/etc/ssl/certs/ca-certificates.crt',
+    ] as $path) {
+        if (is_file($path) && is_readable($path)) {
+            return $path;
+        }
+    }
+    return '';
 }
 
 $GLOBALS['app_config'] = load_app_config();
@@ -322,6 +348,12 @@ function call_mistral(
         return "ERREUR: Aucune clé API Mistral configurée. Ouvre le panneau Configuration API et ajoute une clé.";
     }
 
+    $last_error = '';
+    $endpoint_host = (string)(parse_url($GLOBALS['endpoint'], PHP_URL_HOST) ?? '');
+    $endpoint_scheme = strtolower((string)(parse_url($GLOBALS['endpoint'], PHP_URL_SCHEME) ?? 'https'));
+    $endpoint_port = (int)(parse_url($GLOBALS['endpoint'], PHP_URL_PORT) ?: ($endpoint_scheme === 'http' ? 80 : 443));
+    $curl_resolve = resolve_host_for_curl($endpoint_host, $endpoint_port);
+
     for ($attempt = 0; $attempt < $retry; $attempt++) {
         $key_idx = ($GLOBALS['current_key_index'] + $attempt) % count($api_keys);
         $key     = $api_keys[$key_idx];
@@ -335,7 +367,7 @@ function call_mistral(
         ]);
 
         $ch = curl_init($GLOBALS['endpoint']);
-        curl_setopt_array($ch, [
+        $curl_options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => $payload,
@@ -346,7 +378,15 @@ function call_mistral(
             CURLOPT_TIMEOUT        => 300,
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_USERAGENT      => 'Autoresearch/1.0',
-        ]);
+        ];
+        $ca_bundle = ca_bundle_path();
+        if ($ca_bundle !== '') {
+            $curl_options[CURLOPT_CAINFO] = $ca_bundle;
+        }
+        curl_setopt_array($ch, $curl_options);
+        if (!empty($curl_resolve)) {
+            curl_setopt($ch, CURLOPT_RESOLVE, $curl_resolve);
+        }
 
         $response  = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -354,12 +394,14 @@ function call_mistral(
         close_curl_handle($ch);
 
         if ($curl_err) {
+            $last_error = "Erreur réseau/DNS: $curl_err";
             aether_log("cURL error (attempt $attempt): $curl_err");
             sleep(2);
             continue;
         }
 
         if ($http_code === 429) {
+            $last_error = "Quota ou limite Mistral atteinte (HTTP 429).";
             aether_log("Rate limit (attempt $attempt), sleep 60s...");
             sleep(60);
             continue;
@@ -376,15 +418,17 @@ function call_mistral(
 
         // Sur 429 ou erreur serveur, changer de clé
         if ($http_code === 401 || $http_code === 403) {
-            aether_log("Auth error for key $key_idx (HTTP $http_code)");
+            $last_error = "Clé API refusée ou accès modèle interdit (HTTP $http_code).";
+            aether_log("Auth error for key $key_idx (HTTP $http_code): " . substr((string)$response, 0, 300));
             continue;
         }
 
+        $last_error = "Erreur API HTTP $http_code: " . trim(substr((string)$response, 0, 220));
         aether_log("API error HTTP $http_code (attempt $attempt): " . substr($response, 0, 300));
         sleep(2);
     }
 
-    return "ERREUR: Impossible d'appeler l'API Mistral après $retry tentatives avec le modèle $model.";
+    return "ERREUR: Impossible d'appeler l'API Mistral après $retry tentatives avec le modèle $model. Détail: " . ($last_error ?: "aucun détail reçu.");
 }
 
 // Estimation grossière du nombre de tokens (4 chars ≈ 1 token)
@@ -516,6 +560,68 @@ function close_curl_handle($ch): void {
     if (PHP_VERSION_ID < 80500) {
         curl_close($ch);
     }
+}
+
+function resolve_host_for_curl(string $host, int $port = 443): array {
+    static $cache = [];
+
+    $host = strtolower(trim($host));
+    if ($host === '' || !defined('CURLOPT_RESOLVE')) {
+        return [];
+    }
+
+    $cache_key = $host . ':' . $port;
+    if (isset($cache[$cache_key])) {
+        return $cache[$cache_key];
+    }
+
+    $resolver = 'https://cloudflare-dns.com/dns-query?name=' . rawurlencode($host) . '&type=A';
+    $ch = curl_init($resolver);
+    $options = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/dns-json'],
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_USERAGENT => 'Autoresearch/1.0',
+        CURLOPT_RESOLVE => [
+            'cloudflare-dns.com:443:1.1.1.1',
+            'cloudflare-dns.com:443:1.0.0.1',
+        ],
+    ];
+    $ca_bundle = ca_bundle_path();
+    if ($ca_bundle !== '') {
+        $options[CURLOPT_CAINFO] = $ca_bundle;
+    }
+    curl_setopt_array($ch, $options);
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curl_err = curl_error($ch);
+    close_curl_handle($ch);
+
+    if ($curl_err || $http_code !== 200) {
+        aether_log("DNS fallback failed for {$host}: HTTP {$http_code} {$curl_err}");
+        return $cache[$cache_key] = [];
+    }
+
+    $data = json_decode((string)$response, true);
+    if (json_last_error() !== JSON_ERROR_NONE || empty($data['Answer']) || !is_array($data['Answer'])) {
+        aether_log("DNS fallback invalid response for {$host}: " . substr((string)$response, 0, 180));
+        return $cache[$cache_key] = [];
+    }
+
+    $entries = [];
+    foreach ($data['Answer'] as $answer) {
+        $ip = (string)($answer['data'] ?? '');
+        if (($answer['type'] ?? null) === 1 && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $entries[] = "{$host}:{$port}:{$ip}";
+        }
+    }
+
+    if (!empty($entries)) {
+        aether_log("DNS fallback ready for {$host} with " . count($entries) . " IPv4 address(es)");
+    }
+
+    return $cache[$cache_key] = $entries;
 }
 
 function is_api_error_response(string $response): bool {
@@ -895,11 +1001,16 @@ PROMPT
 function agent_web_search(string $query): string {
     $url = "https://api.duckduckgo.com/?q=" . urlencode($query) . "&format=json&no_html=1&skip_disambig=1";
     $ch  = curl_init($url);
-    curl_setopt_array($ch, [
+    $curl_options = [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 15,
         CURLOPT_USERAGENT      => 'Autoresearch/1.0',
-    ]);
+    ];
+    $ca_bundle = ca_bundle_path();
+    if ($ca_bundle !== '') {
+        $curl_options[CURLOPT_CAINFO] = $ca_bundle;
+    }
+    curl_setopt_array($ch, $curl_options);
     $json = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     close_curl_handle($ch);
@@ -972,7 +1083,7 @@ function mode_chat(string $user_input, string $base_url): void {
     ];
 
     stream_html("<h3>" . icon('comments') . "Réponse Autoresearch :</h3>");
-    $response = call_mistral($messages, 'chat', 0.9, 8192);
+    $response = call_mistral($messages, 'chat', 0.9, 1024);
     stream_html("<pre class='response'>" . htmlspecialchars($response) . "</pre>");
 
     // Sauvegarder

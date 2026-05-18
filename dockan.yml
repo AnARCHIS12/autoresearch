@@ -4,6 +4,7 @@ services:
     build: .
     image: autoresearch:latest
     isolation: bubblewrap
+    network: host
     ports:
       - 8010:8010
     restart: always
