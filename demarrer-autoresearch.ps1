@@ -46,14 +46,16 @@ function New-LocalPhpIni {
 
     $ExtDir = $null
     foreach ($Candidate in $Candidates) {
-        if ((Test-Path (Join-Path $Candidate "php_pdo_sqlite.dll")) -or (Test-Path (Join-Path $Candidate "pdo_sqlite.dll"))) {
+        $HasSqlite = (Test-Path (Join-Path $Candidate "php_pdo_sqlite.dll")) -or (Test-Path (Join-Path $Candidate "pdo_sqlite.dll"))
+        $HasCurl = (Test-Path (Join-Path $Candidate "php_curl.dll")) -or (Test-Path (Join-Path $Candidate "curl.dll"))
+        if ($HasSqlite -and $HasCurl) {
             $ExtDir = $Candidate
             break
         }
     }
 
     if (-not $ExtDir) {
-        throw "L'extension PHP SQLite est introuvable. Reinstallez PHP avec SQLite, ou installez PHP via winget/choco."
+        throw "Les extensions PHP SQLite/cURL sont introuvables. Reinstallez PHP avec SQLite et cURL, ou installez PHP via winget/choco."
     }
 
     New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
@@ -62,6 +64,7 @@ function New-LocalPhpIni {
 
     @"
 extension_dir="$ExtDirForIni"
+extension=curl
 extension=pdo_sqlite
 extension=sqlite3
 memory_limit=512M
@@ -78,8 +81,8 @@ function Assert-PhpSqlite($PhpIni) {
     if ($LASTEXITCODE -ne 0) {
         throw "PHP n'arrive pas a charger la configuration locale: $Modules"
     }
-    if (($Modules -notcontains "PDO") -or ($Modules -notcontains "pdo_sqlite")) {
-        throw "PHP demarre, mais le driver SQLite PDO n'est pas charge. Consultez $PhpIni."
+    if (($Modules -notcontains "PDO") -or ($Modules -notcontains "pdo_sqlite") -or ($Modules -notcontains "curl")) {
+        throw "PHP demarre, mais SQLite PDO ou cURL n'est pas charge. Consultez $PhpIni."
     }
 }
 
