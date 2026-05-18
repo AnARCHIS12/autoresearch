@@ -632,6 +632,29 @@ function has_api_keys(): bool {
     return !empty(array_values(array_filter($GLOBALS['api_keys'] ?? [])));
 }
 
+function generated_file_full_path(string $relative_path): ?string {
+    $relative_path = ltrim(str_replace('\\', '/', $relative_path), '/');
+    if ($relative_path === '' || str_contains($relative_path, '..')) {
+        return null;
+    }
+
+    $apps_root = realpath($GLOBALS['apps_dir']);
+    if ($apps_root === false) {
+        return null;
+    }
+
+    $full_path = realpath($GLOBALS['apps_dir'] . '/' . $relative_path);
+    if ($full_path === false || !is_file($full_path)) {
+        return null;
+    }
+
+    return str_starts_with($full_path, $apps_root . DIRECTORY_SEPARATOR) ? $full_path : null;
+}
+
+function generated_file_view_url(string $relative_path): string {
+    return '?view_file=' . rawurlencode(ltrim(str_replace('\\', '/', $relative_path), '/'));
+}
+
 // =====================================================================
 // VALIDATION DU CODE
 // =====================================================================
@@ -1120,6 +1143,21 @@ $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'htt
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
     . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/');
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['view_file'])) {
+    $file_path = generated_file_full_path((string)$_GET['view_file']);
+    if ($file_path === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Fichier introuvable.";
+        exit;
+    }
+
+    header('Content-Type: text/plain; charset=utf-8');
+    header('X-Content-Type-Options: nosniff');
+    readfile($file_path);
+    exit;
+}
+
 // =====================================================================
 // INTERFACE WEB — HTML + CSS
 // =====================================================================
@@ -1268,6 +1306,33 @@ $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'htt
   button:hover { background: #1f1f24; border-color: #52525b; }
   button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
   button.primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
+  a.action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: #151519;
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 650;
+    font-size: 13px;
+  }
+  a.action-button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  a.action-button:hover { background: #1f1f24; border-color: #52525b; text-decoration: none; }
+  a.action-button.primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
+  .project-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .site-preview {
+    width: 100%;
+    height: min(620px, 70vh);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    margin-top: 12px;
+  }
   .output-box {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -1500,11 +1565,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $all_files = $files->fetchAll();
 
                 if (!empty($all_files)) {
-                    stream_html("<table><tr><th>Fichier</th><th>Langage</th><th>Statut</th><th>Tentatives</th></tr>");
+                    stream_html("<table id='generated-files'><tr><th>Fichier</th><th>Langage</th><th>Statut</th><th>Tentatives</th><th>Source</th></tr>");
                     foreach ($all_files as $f) {
                         $cls = str_contains($f['validation_status'], 'OK') ? 'status-ok' :
                               (str_contains($f['validation_status'], 'ERREUR') ? 'status-err' : 'status-pend');
-                        stream_html("<tr><td><code>{$f['file_path']}</code></td><td>{$f['language']}</td><td class='{$cls}'>{$f['validation_status']}</td><td>{$f['attempts']}</td></tr>");
+                        $view_url = generated_file_view_url($f['file_path']);
+                        stream_html("<tr><td><code>{$f['file_path']}</code></td><td>{$f['language']}</td><td class='{$cls}'>{$f['validation_status']}</td><td>{$f['attempts']}</td><td><a href='{$view_url}' target='_blank' class='action-button'>" . icon('code') . "Voir</a></td></tr>");
                     }
                     stream_html("</table>");
                 }
@@ -1512,7 +1578,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($result['success']) {
                     $url = $base_url . '/generated_apps/' . $project_name . '/index.php';
                     stream_html("<p class='success'>" . icon('trophy') . "Projet généré et validé à 100% !</p>");
+                    stream_html("<div class='project-actions'>");
+                    stream_html("<a class='action-button primary' href='{$url}' target='_blank'>" . icon('arrow-up-right-from-square') . "Ouvrir le site</a>");
+                    stream_html("<a class='action-button' href='#generated-files'>" . icon('folder-open') . "Voir les fichiers</a>");
+                    stream_html("</div>");
                     stream_html("<p>" . icon('link') . "URL: <a href='{$url}' target='_blank' style='color:var(--accent)'>{$url}</a></p>");
+                    stream_html("<h4>" . icon('desktop') . "Aperçu du site généré</h4>");
+                    stream_html("<iframe class='site-preview' src='{$url}' title='Aperçu du site généré'></iframe>");
+                    stream_html("<script>setTimeout(function(){try{window.open(" . json_encode($url) . ", '_blank', 'noopener');}catch(e){}}, 300);</script>");
                 } elseif (!empty($all_files)) {
                     stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Projet partiellement validé. Vérification manuelle recommandée.</p>");
                     stream_html("<p>" . icon('folder') . "Dossier: <code>generated_apps/{$project_name}/</code></p>");
