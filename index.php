@@ -344,7 +344,7 @@ function call_mistral(
         $response  = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curl_err  = curl_error($ch);
-        curl_close($ch);
+        close_curl_handle($ch);
 
         if ($curl_err) {
             aether_log("cURL error (attempt $attempt): $curl_err");
@@ -505,6 +505,12 @@ function ext_for_lang(string $lang): string {
     };
 }
 
+function close_curl_handle($ch): void {
+    if (PHP_VERSION_ID < 80500) {
+        curl_close($ch);
+    }
+}
+
 // =====================================================================
 // VALIDATION DU CODE
 // =====================================================================
@@ -613,7 +619,7 @@ function test_php_file_http(string $full_path, string $base_url): array {
     $output    = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curl_err  = curl_error($ch);
-    curl_close($ch);
+    close_curl_handle($ch);
 
     if ($curl_err) return ['success' => false, 'error' => "cURL: $curl_err", 'code' => 0];
 
@@ -870,7 +876,7 @@ function agent_web_search(string $query): string {
     ]);
     $json = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    close_curl_handle($ch);
 
     if ($code !== 200) return "Recherche indisponible (HTTP $code)";
 
