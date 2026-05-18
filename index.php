@@ -655,6 +655,133 @@ function generated_file_view_url(string $relative_path): string {
     return '?view_file=' . rawurlencode(ltrim(str_replace('\\', '/', $relative_path), '/'));
 }
 
+function generated_app_mime_type(string $path): string {
+    return match(strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
+        'css' => 'text/css; charset=utf-8',
+        'js' => 'application/javascript; charset=utf-8',
+        'json' => 'application/json; charset=utf-8',
+        'svg' => 'image/svg+xml',
+        'png' => 'image/png',
+        'jpg', 'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif',
+        'webp' => 'image/webp',
+        default => 'text/plain; charset=utf-8',
+    };
+}
+
+function rewrite_generated_app_html(string $html, string $project_name): string {
+    $base = '/generated_apps/' . rawurlencode($project_name);
+    $html = str_replace('href="/public/', 'href="' . $base . '/public/', $html);
+    $html = str_replace("href='/public/", "href='" . $base . "/public/", $html);
+    $html = str_replace('src="/public/', 'src="' . $base . '/public/', $html);
+    $html = str_replace("src='/public/", "src='" . $base . "/public/", $html);
+    $html = str_replace('href="/"', 'href="' . $base . '/index.php"', $html);
+    $html = str_replace("href='/'", "href='" . $base . "/index.php'", $html);
+    return $html;
+}
+
+function serve_generated_php_file(string $file_path, string $project_root, string $project_name, string $app_request_path): void {
+    $old_cwd = getcwd();
+    $old_server = $_SERVER;
+    $route_path = trim($app_request_path, '/');
+    if ($route_path === '' || $route_path === 'index.php') {
+        $route_path = '/';
+    } else {
+        $route_path = '/' . $route_path;
+    }
+
+    $_SERVER['REQUEST_URI'] = $route_path;
+    $_SERVER['SCRIPT_NAME'] = '/generated_apps/' . $project_name . '/' . basename($file_path);
+    $_SERVER['PHP_SELF'] = $_SERVER['SCRIPT_NAME'];
+
+    chdir($project_root);
+    ob_start();
+    $fallback_view = $project_root . '/views/home.php';
+    try {
+        include $file_path;
+        $html = ob_get_clean();
+    } catch (Throwable $e) {
+        ob_end_clean();
+        if (basename($file_path) === 'index.php' && is_file($fallback_view)) {
+            $users = [];
+            ob_start();
+            include $fallback_view;
+            $html = ob_get_clean();
+        } else {
+            http_response_code(500);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo "Erreur dans l'application générée: " . $e->getMessage();
+            if ($old_cwd) chdir($old_cwd);
+            $_SERVER = $old_server;
+            return;
+        }
+    }
+
+    if (basename($file_path) === 'index.php' && trim(strip_tags($html)) === 'Page not found' && is_file($fallback_view)) {
+        http_response_code(200);
+        $users = [];
+        ob_start();
+        include $fallback_view;
+        $html = ob_get_clean();
+    }
+
+    if ($old_cwd) chdir($old_cwd);
+    $_SERVER = $old_server;
+    header('Content-Type: text/html; charset=utf-8');
+    echo rewrite_generated_app_html($html, $project_name);
+}
+
+function serve_generated_app_request(): void {
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+    $marker = '/generated_apps/';
+    $pos = strpos($path, $marker);
+    if ($pos === false) {
+        return;
+    }
+
+    $relative = urldecode(substr($path, $pos + strlen($marker)));
+    $relative = ltrim(str_replace('\\', '/', $relative), '/');
+    if ($relative === '' || str_contains($relative, '..')) {
+        http_response_code(404);
+        echo "Application introuvable.";
+        exit;
+    }
+
+    $parts = explode('/', $relative, 2);
+    $project_name = $parts[0] ?? '';
+    $app_request_path = $parts[1] ?? 'index.php';
+    if ($app_request_path === '') {
+        $app_request_path = 'index.php';
+    }
+
+    $apps_root = realpath($GLOBALS['apps_dir']);
+    $project_root = realpath($GLOBALS['apps_dir'] . '/' . $project_name);
+    if ($apps_root === false || $project_root === false || !str_starts_with($project_root, $apps_root . DIRECTORY_SEPARATOR)) {
+        http_response_code(404);
+        echo "Application introuvable.";
+        exit;
+    }
+
+    $file_path = realpath($project_root . '/' . $app_request_path);
+    if ($file_path === false && !str_contains($app_request_path, '.')) {
+        $file_path = realpath($project_root . '/index.php');
+    }
+    if ($file_path === false || !is_file($file_path) || !str_starts_with($file_path, $project_root . DIRECTORY_SEPARATOR)) {
+        http_response_code(404);
+        echo "Fichier généré introuvable.";
+        exit;
+    }
+
+    if (strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) === 'php') {
+        serve_generated_php_file($file_path, $project_root, $project_name, $app_request_path);
+    } else {
+        header('Content-Type: ' . generated_app_mime_type($file_path));
+        header('X-Content-Type-Options: nosniff');
+        readfile($file_path);
+    }
+    exit;
+}
+
 // =====================================================================
 // VALIDATION DU CODE
 // =====================================================================
@@ -1142,6 +1269,8 @@ $masked_keys   = array_map('mask_secret', $GLOBALS['api_keys']);
 $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
     . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/');
+
+serve_generated_app_request();
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['view_file'])) {
     $file_path = generated_file_full_path((string)$_GET['view_file']);
