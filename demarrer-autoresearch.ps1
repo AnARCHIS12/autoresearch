@@ -51,13 +51,14 @@ Install-PHP-IfPossible
 
 if (-not (Test-App)) {
     Say "Demarrage avec PHP local"
-    $LogFile = Join-Path $LogDir "php-server.log"
-    Start-Process -FilePath "php" -ArgumentList @("-S", "127.0.0.1:$Port", "-t", "`"$AppDir`"") -WindowStyle Hidden -RedirectStandardOutput $LogFile -RedirectStandardError $LogFile
+    $StdoutLog = Join-Path $LogDir "php-server.out.log"
+    $StderrLog = Join-Path $LogDir "php-server.err.log"
+    Start-Process -FilePath "php" -ArgumentList @("-S", "127.0.0.1:$Port", "-t", "`"$AppDir`"") -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog
     Start-Sleep -Seconds 2
 }
 
 if (-not (Test-App)) {
-    throw "Le serveur PHP n'a pas demarre. Consultez logs\php-server.log."
+    throw "Le serveur PHP n'a pas demarre. Consultez logs\php-server.out.log et logs\php-server.err.log."
 }
 
 Say "Ouverture du navigateur"
