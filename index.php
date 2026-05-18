@@ -19,14 +19,21 @@ header('X-Accel-Buffering: no');
 // =====================================================================
 // CONFIGURATION GLOBALE
 // =====================================================================
-$GLOBALS['data_dir']          = __DIR__ . '/data';
+$dockan_volumes_dir = is_dir('/dockan/volumes') ? '/dockan/volumes' : null;
+$GLOBALS['data_dir']          = $dockan_volumes_dir && is_dir($dockan_volumes_dir . '/app_data')
+    ? $dockan_volumes_dir . '/app_data'
+    : __DIR__ . '/data';
 $GLOBALS['config_file']       = $GLOBALS['data_dir'] . '/autoresearch_config.json';
 $GLOBALS['api_keys']          = [];
 $GLOBALS['endpoint']          = 'https://api.mistral.ai/v1/chat/completions';
 $GLOBALS['current_key_index'] = 0;
 $GLOBALS['db_file']           = $GLOBALS['data_dir'] . '/autoresearch_memory.sqlite';
-$GLOBALS['apps_dir']          = __DIR__ . '/generated_apps';
-$GLOBALS['logs_dir']          = __DIR__ . '/logs';
+$GLOBALS['apps_dir']          = $dockan_volumes_dir && is_dir($dockan_volumes_dir . '/app_generated_apps')
+    ? $dockan_volumes_dir . '/app_generated_apps'
+    : __DIR__ . '/generated_apps';
+$GLOBALS['logs_dir']          = $dockan_volumes_dir && is_dir($dockan_volumes_dir . '/app_logs')
+    ? $dockan_volumes_dir . '/app_logs'
+    : __DIR__ . '/logs';
 
 function load_app_config(): array {
     $config = [

@@ -134,6 +134,14 @@ Autoresearch utilise ces dossiers:
 - `logs/` pour les journaux;
 - `data/` pour la configuration et la base SQLite locale.
 
+Avec Dockan, ces dossiers sont declares dans le `Dockanfile`:
+
+```dockerfile
+VOLUME ["/app/data", "/app/generated_apps", "/app/logs"]
+```
+
+Le service reste en `isolation: bubblewrap`.
+
 ## Securite
 
 Autoresearch genere et lance du code PHP produit par IA. Il est recommande de l'utiliser en local, dans un environnement de test, et de ne pas l'exposer publiquement sans audit de securite.

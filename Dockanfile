@@ -4,4 +4,5 @@ ENV PHP_INI_SCAN_DIR=/dockan/rootfs/app/.dockan/php.d
 WORKDIR /app
 COPY . /app
 EXPOSE 8010
+VOLUME ["/app/data", "/app/generated_apps", "/app/logs"]
 CMD php -S 0.0.0.0:8010 -t .
