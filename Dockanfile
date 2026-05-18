@@ -1,0 +1,7 @@
+FROM php:8.3
+ENV PHPRC=/dockan/rootfs/app/.dockan/php.ini
+ENV PHP_INI_SCAN_DIR=/dockan/rootfs/app/.dockan/php.d
+WORKDIR /app
+COPY . /app
+EXPOSE 8010
+CMD php -S 0.0.0.0:8010 -t .

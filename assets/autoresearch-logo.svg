@@ -1,0 +1,16 @@
+<svg width="880" height="220" viewBox="0 0 880 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="880" height="220" rx="24" fill="#070709"/>
+  <rect x="24" y="24" width="172" height="172" rx="22" fill="#111114" stroke="#3a3a42" stroke-width="2"/>
+  <circle cx="101" cy="94" r="38" stroke="#e11d48" stroke-width="12"/>
+  <path d="M129 122L158 151" stroke="#e11d48" stroke-width="14" stroke-linecap="round"/>
+  <path d="M70 151H132" stroke="#f4f4f5" stroke-width="10" stroke-linecap="round"/>
+  <path d="M88 132H140" stroke="#a1a1aa" stroke-width="8" stroke-linecap="round"/>
+  <text x="228" y="96" fill="#f4f4f5" font-family="Inter, Arial, sans-serif" font-size="48" font-weight="800">Autoresearch</text>
+  <text x="230" y="136" fill="#a1a1aa" font-family="Inter, Arial, sans-serif" font-size="20">Agent autonome PHP, SQLite et Mistral</text>
+  <rect x="230" y="160" width="122" height="30" rx="8" fill="#e11d48"/>
+  <text x="250" y="181" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">PHP + SQLite</text>
+  <rect x="364" y="160" width="92" height="30" rx="8" fill="#18181c" stroke="#3a3a42"/>
+  <text x="386" y="181" fill="#f4f4f5" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">Dockan</text>
+  <rect x="468" y="160" width="88" height="30" rx="8" fill="#18181c" stroke="#3a3a42"/>
+  <text x="491" y="181" fill="#f4f4f5" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">Mistral</text>
+</svg>

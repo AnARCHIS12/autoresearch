@@ -1,6 +1,6 @@
 <?php
 // =================================================================
-// AETHER 3.0 — AGENT AUTONOME ULTRA-AVANCÉ (PHP + SQLite + Mistral)
+// AUTORESEARCH — AGENT AUTONOME PHP + SQLite + Mistral
 // Architecture : Multi-agents, boucle infinie, auto-correction 100%
 // Fix : UNIQUE constraint, modèles OK uniquement, timeouts Hostinger
 // =================================================================
@@ -19,16 +19,91 @@ header('X-Accel-Buffering: no');
 // =====================================================================
 // CONFIGURATION GLOBALE
 // =====================================================================
-$GLOBALS['api_keys'] = [
-    '5qaRTjWgfdsgfdggsgRake',
-    'o3rG1gfdsgfdsgfdsShytu',
-    'vEzgfdsgfdsgfdsgfduXkF'
-];
+$GLOBALS['data_dir']          = __DIR__ . '/data';
+$GLOBALS['config_file']       = $GLOBALS['data_dir'] . '/autoresearch_config.json';
+$GLOBALS['api_keys']          = [];
 $GLOBALS['endpoint']          = 'https://api.mistral.ai/v1/chat/completions';
 $GLOBALS['current_key_index'] = 0;
-$GLOBALS['db_file']           = __DIR__ . '/aether_memory.sqlite';
+$GLOBALS['db_file']           = $GLOBALS['data_dir'] . '/autoresearch_memory.sqlite';
 $GLOBALS['apps_dir']          = __DIR__ . '/generated_apps';
 $GLOBALS['logs_dir']          = __DIR__ . '/logs';
+
+function load_app_config(): array {
+    $config = [
+        'endpoint' => 'https://api.mistral.ai/v1/chat/completions',
+        'api_keys' => [],
+    ];
+
+    $env_key = trim((string)getenv('MISTRAL_API_KEY'));
+    if ($env_key !== '') {
+        $config['api_keys'] = array_values(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $env_key))));
+    }
+
+    $file = $GLOBALS['config_file'];
+    if (is_file($file)) {
+        $raw = file_get_contents($file);
+        $saved = json_decode($raw ?: '', true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($saved)) {
+            $config['endpoint'] = trim((string)($saved['endpoint'] ?? $config['endpoint'])) ?: $config['endpoint'];
+            if (!empty($saved['api_keys']) && is_array($saved['api_keys'])) {
+                $config['api_keys'] = array_values(array_filter(array_map('trim', $saved['api_keys'])));
+            }
+        }
+    }
+
+    return $config;
+}
+
+function save_app_config(string $endpoint, string $api_keys_text, bool $clear_keys = false): array {
+    $current = load_app_config();
+    $endpoint = trim($endpoint) ?: $current['endpoint'];
+    if (!preg_match('/^https?:\/\/.+/i', $endpoint)) {
+        return [false, "Endpoint invalide. Utilise une URL http(s)."];
+    }
+
+    $keys = $current['api_keys'];
+    $api_keys_text = trim($api_keys_text);
+    if ($clear_keys) {
+        $keys = [];
+    } elseif ($api_keys_text !== '') {
+        $keys = array_values(array_unique(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $api_keys_text)))));
+    }
+
+    if (!is_dir($GLOBALS['data_dir']) && !@mkdir($GLOBALS['data_dir'], 0755, true)) {
+        return [false, "Impossible de créer le dossier data."];
+    }
+
+    $payload = json_encode([
+        'endpoint' => $endpoint,
+        'api_keys' => $keys,
+        'updated_at' => date('c'),
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+    if (@file_put_contents($GLOBALS['config_file'], $payload, LOCK_EX) === false) {
+        return [false, "Impossible d'écrire la configuration."];
+    }
+    @chmod($GLOBALS['config_file'], 0600);
+
+    $GLOBALS['endpoint'] = $endpoint;
+    $GLOBALS['api_keys'] = $keys;
+    return [true, "Configuration enregistrée. Clés actives: " . count($keys) . "."];
+}
+
+function mask_secret(string $value): string {
+    $value = trim($value);
+    if ($value === '') return '';
+    if (strlen($value) <= 8) return str_repeat('*', strlen($value));
+    return substr($value, 0, 4) . str_repeat('*', max(4, strlen($value) - 8)) . substr($value, -4);
+}
+
+function icon(string $name, string $extra_class = ''): string {
+    $class = trim("fa-solid fa-{$name} icon {$extra_class}");
+    return "<i class=\"{$class}\" aria-hidden=\"true\"></i>";
+}
+
+$GLOBALS['app_config'] = load_app_config();
+$GLOBALS['endpoint']   = $GLOBALS['app_config']['endpoint'];
+$GLOBALS['api_keys']   = $GLOBALS['app_config']['api_keys'];
 
 // =====================================================================
 // MODÈLES OPÉRATIONNELS (uniquement les "OK" vérifiés)
@@ -125,7 +200,7 @@ function get_db(): PDO {
         improvement_score INTEGER
     )");
 
-    // Prompt maître — FIX : pas de UNIQUE constraint rigide, on gère par id=1
+    // Prompt  — FIX : pas de UNIQUE constraint rigide, on gère par id=1
     $pdo->exec("CREATE TABLE IF NOT EXISTS master_prompt (
         id         INTEGER PRIMARY KEY,
         prompt     TEXT NOT NULL,
@@ -174,10 +249,10 @@ function get_db(): PDO {
     return $pdo;
 }
 
-// Initialisation prompt maître (FIX UNIQUE CONSTRAINT : INSERT OR REPLACE)
+// Initialisation prompt  (FIX UNIQUE CONSTRAINT : INSERT OR REPLACE)
 function init_master_prompt(PDO $pdo): string {
     $default = <<<PROMPT
-Tu es **Aether 3.0** — une intelligence autonome de développement web PHP.
+Tu es **Autoresearch** — une intelligence autonome de développement web PHP.
 
 ## MISSION
 Créer des applications web PHP/SQLite complètes, fonctionnelles, testées à 100%.
@@ -235,10 +310,14 @@ function call_mistral(
     int    $retry       = 3
 ): string {
     $model = select_model($task, estimate_tokens($messages));
+    $api_keys = array_values(array_filter($GLOBALS['api_keys']));
+    if (empty($api_keys)) {
+        return "ERREUR: Aucune clé API Mistral configurée. Ouvre le panneau Configuration API et ajoute une clé.";
+    }
 
     for ($attempt = 0; $attempt < $retry; $attempt++) {
-        $key_idx = ($GLOBALS['current_key_index'] + $attempt) % count($GLOBALS['api_keys']);
-        $key     = $GLOBALS['api_keys'][$key_idx];
+        $key_idx = ($GLOBALS['current_key_index'] + $attempt) % count($api_keys);
+        $key     = $api_keys[$key_idx];
 
         $payload = json_encode([
             'model'       => $model,
@@ -259,7 +338,7 @@ function call_mistral(
             ],
             CURLOPT_TIMEOUT        => 300,
             CURLOPT_CONNECTTIMEOUT => 30,
-            CURLOPT_USERAGENT      => 'Aether/3.0',
+            CURLOPT_USERAGENT      => 'Autoresearch/1.0',
         ]);
 
         $response  = curl_exec($ch);
@@ -282,7 +361,7 @@ function call_mistral(
         if ($http_code === 200) {
             $data = json_decode($response, true);
             if (json_last_error() === JSON_ERROR_NONE && isset($data['choices'][0]['message']['content'])) {
-                $GLOBALS['current_key_index'] = ($key_idx + 1) % count($GLOBALS['api_keys']);
+                $GLOBALS['current_key_index'] = ($key_idx + 1) % count($api_keys);
                 sleep(1); // respect rate limit 1 req/sec
                 return $data['choices'][0]['message']['content'];
             }
@@ -482,7 +561,7 @@ function validate_js(string $content): array {
 function validate_sql(string $content): array {
     if (empty(trim($content))) return [false, 'SQL vide'];
     try {
-        $tmp = sys_get_temp_dir() . '/aether_sql_' . uniqid() . '.sqlite';
+        $tmp = sys_get_temp_dir() . '/autoresearch_sql_' . uniqid() . '.sqlite';
         $db  = new PDO("sqlite:$tmp");
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         // Exécuter les CREATE TABLE (safe)
@@ -528,8 +607,8 @@ function test_php_file_http(string $full_path, string $base_url): array {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 30,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_HTTPHEADER     => ['X-Aether-Test: 1', 'Accept: text/html'],
-        CURLOPT_USERAGENT      => 'Aether-TestBot/3.0',
+        CURLOPT_HTTPHEADER     => ['X-Autoresearch-Test: 1', 'Accept: text/html'],
+        CURLOPT_USERAGENT      => 'Autoresearch-TestBot/1.0',
     ]);
     $output    = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -570,7 +649,7 @@ function auto_correct_loop(
     $all_files  = [];
     $final_ok   = false;
 
-    stream_html("<div class='correction-loop'><h3>🔄 Boucle de correction automatique</h3>");
+    stream_html("<div class='correction-loop'><h3>" . icon('rotate') . "Boucle de correction automatique</h3>");
 
     while ($iteration < $max_iterations) {
         $iteration++;
@@ -582,7 +661,7 @@ function auto_correct_loop(
         $all_files = array_merge($all_files, $saved);
 
         if (empty($saved)) {
-            stream_html("<p class='warn'>⚠ Aucun fichier extrait. Tentative de re-génération...</p>");
+            stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Aucun fichier extrait. Tentative de re-génération...</p>");
             // Demander à l'IA de reformuler avec les balises correctes
             $messages[] = ['role' => 'assistant', 'content' => $current];
             $messages[] = ['role' => 'user', 'content' => "Aucun fichier n'a pu être extrait. Utilise OBLIGATOIREMENT le format exact:\n<code language=\"php\" path=\"{$project_name}/index.php\">/* ton code */</code>\nRefais la réponse complète avec TOUS les fichiers."];
@@ -606,33 +685,33 @@ function auto_correct_loop(
             if ($test['success']) {
                 $ok_count++;
                 $pdo->prepare("UPDATE generated_files SET validation_status='HTTP 200 OK' WHERE file_path=?")->execute([$file['path']]);
-                stream_html("<span class='ok'>✅ {$file['path']} — HTTP {$test['code']}</span><br>");
+                stream_html("<span class='ok'>" . icon('circle-check') . "{$file['path']} — HTTP {$test['code']}</span><br>");
             } else {
                 $errors[] = "Fichier `{$file['path']}` ERREUR: {$test['error']}";
                 $pdo->prepare("UPDATE generated_files SET validation_status=?, last_error=?, attempts=attempts+1 WHERE file_path=?")
                     ->execute(["ERREUR: {$test['error']}", $test['error'], $file['path']]);
-                stream_html("<span class='err'>❌ {$file['path']} — {$test['error']}</span><br>");
+                stream_html("<span class='err'>" . icon('circle-xmark') . "{$file['path']} — {$test['error']}</span><br>");
             }
         }
 
         // Vérifier le taux de succès
         $total   = count($saved);
         $pct     = $total > 0 ? round(($ok_count / $total) * 100) : 0;
-        stream_html("<p>📊 Taux de réussite: <strong>{$ok_count}/{$total} ({$pct}%)</strong></p>");
+        stream_html("<p>" . icon('chart-simple') . "Taux de réussite: <strong>{$ok_count}/{$total} ({$pct}%)</strong></p>");
 
         // Mettre à jour le projet
         $pdo->prepare("INSERT OR REPLACE INTO projects (name, description, status, files_ok, files_total) VALUES (?,?,?,?,?)")
-            ->execute([$project_name, "Projet généré par Aether 3.0", $pct >= 100 ? 'complete' : 'in_progress', $ok_count, $total]);
+            ->execute([$project_name, "Projet généré par Autoresearch", $pct >= 100 ? 'complete' : 'in_progress', $ok_count, $total]);
 
         if (empty($errors)) {
             $final_ok = true;
-            stream_html("<p class='success'>🎉 <strong>100% validé — Projet complet !</strong></p>");
+            stream_html("<p class='success'>" . icon('trophy') . "<strong>100% validé — Projet complet !</strong></p>");
             stream_html("</div>");
             break;
         }
 
         // Des erreurs subsistent — correction ciblée
-        stream_html("<p>🔧 Corrections nécessaires: " . count($errors) . " fichier(s)</p></div>");
+        stream_html("<p>" . icon('wrench') . "Corrections nécessaires: " . count($errors) . " fichier(s)</p></div>");
 
         // Récupérer le code erroné pour contexte
         $error_context = implode("\n", $errors);
@@ -671,7 +750,7 @@ MSG;
     }
 
     if (!$final_ok) {
-        stream_html("<p class='warn'>⚠ Limite d'itérations atteinte ($max_iterations). Vérification manuelle recommandée.</p>");
+        stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Limite d'itérations atteinte ($max_iterations). Vérification manuelle recommandée.</p>");
     }
 
     stream_html("</div>");
@@ -682,7 +761,7 @@ MSG;
 // AGENT ARCHITECTE — Décide de la structure du projet
 // =====================================================================
 function agent_architect(string $user_request, string $project_name): array {
-    stream_html("<div class='agent'><h4>🏗 Agent Architecte</h4>");
+    stream_html("<div class='agent'><h4>" . icon('drafting-compass') . "Agent Architecte</h4>");
 
     $messages = [
         ['role' => 'system', 'content' => "Tu es un architecte logiciel PHP. Analyse la demande et retourne UNIQUEMENT un JSON valide avec la structure du projet. Format: {\"files\": [{\"path\": \"nom/fichier.php\", \"lang\": \"php\", \"description\": \"rôle du fichier\"}], \"agents\": [\"agent1\", \"agent2\"], \"tech_stack\": \"description\"}"],
@@ -727,7 +806,7 @@ function agent_architect(string $user_request, string $project_name): array {
 // =====================================================================
 function agent_generate_project(string $user_request, string $project_name, array $architecture, string $base_url): array {
     $pdo = get_db();
-    stream_html("<div class='agent'><h4>⚡ Agent Générateur</h4>");
+    stream_html("<div class='agent'><h4>" . icon('bolt') . "Agent Générateur</h4>");
 
     $master_prompt = $pdo->query("SELECT prompt FROM master_prompt WHERE id=1")->fetchColumn();
 
@@ -772,7 +851,7 @@ PROMPT
     $pdo->prepare("INSERT INTO memory (type, content, result, metadata) VALUES (?,?,?,?)")
         ->execute(['generation', $user_request, substr($response, 0, 500), json_encode(['project' => $project_name])]);
 
-    stream_html("<p>✅ Génération initiale reçue (" . strlen($response) . " chars)</p></div>");
+    stream_html("<p>" . icon('circle-check') . "Génération initiale reçue (" . strlen($response) . " chars)</p></div>");
 
     // Lancer la boucle de correction infinie
     return auto_correct_loop($response, $messages, $project_name, $base_url);
@@ -787,7 +866,7 @@ function agent_web_search(string $query): string {
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 15,
-        CURLOPT_USERAGENT      => 'Aether/3.0',
+        CURLOPT_USERAGENT      => 'Autoresearch/1.0',
     ]);
     $json = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -843,9 +922,9 @@ function self_improve_prompt(): string {
         // FIX : UPDATE, pas INSERT (évite la violation UNIQUE)
         $pdo->prepare("UPDATE master_prompt SET prompt=?, updated_at=CURRENT_TIMESTAMP WHERE id=1")
             ->execute([$new_prompt]);
-        return "✅ Prompt amélioré (score $score/100).";
+        return "Prompt amélioré (score $score/100).";
     }
-    return "❌ Aucune amélioration détectée dans la réponse.";
+    return "Aucune amélioration détectée dans la réponse.";
 }
 
 // =====================================================================
@@ -860,7 +939,7 @@ function mode_chat(string $user_input, string $base_url): void {
         ['role' => 'user',   'content' => $user_input],
     ];
 
-    stream_html("<h3>💬 Réponse Aether :</h3>");
+    stream_html("<h3>" . icon('comments') . "Réponse Autoresearch :</h3>");
     $response = call_mistral($messages, 'chat', 0.9, 8192);
     stream_html("<pre class='response'>" . htmlspecialchars($response) . "</pre>");
 
@@ -870,9 +949,9 @@ function mode_chat(string $user_input, string $base_url): void {
     // Tentative d'extraction de fichiers
     $result = extract_and_save_files($response, 'chat_' . date('Ymd_His'));
     if (!empty($result['saved'])) {
-        stream_html("<h4>📁 Fichiers extraits :</h4><ul>");
+        stream_html("<h4>" . icon('folder-open') . "Fichiers extraits :</h4><ul>");
         foreach ($result['saved'] as $f) {
-            $status = $f['valid'] ? "✅" : "⚠";
+            $status = $f['valid'] ? icon('circle-check') : icon('triangle-exclamation');
             stream_html("<li>{$status} <code>{$f['path']}</code> ({$f['lang']}) — {$f['msg']}</li>");
         }
         stream_html("</ul>");
@@ -881,8 +960,8 @@ function mode_chat(string $user_input, string $base_url): void {
         foreach ($result['saved'] as $f) {
             if ($f['lang'] === 'php') {
                 $test = test_php_file_http($f['full_path'], $base_url);
-                $icon = $test['success'] ? '✅' : '❌';
-                stream_html("<p>{$icon} Test HTTP {$f['path']}: HTTP {$test['code']}</p>");
+                $status_icon = $test['success'] ? icon('circle-check') : icon('circle-xmark');
+                stream_html("<p>{$status_icon} Test HTTP {$f['path']}: HTTP {$test['code']}</p>");
             }
         }
     }
@@ -891,11 +970,13 @@ function mode_chat(string $user_input, string $base_url): void {
 // =====================================================================
 // INITIALISATION DES DOSSIERS ET DB
 // =====================================================================
-foreach ([$GLOBALS['apps_dir'], $GLOBALS['logs_dir']] as $d) {
+foreach ([$GLOBALS['data_dir'], $GLOBALS['apps_dir'], $GLOBALS['logs_dir']] as $d) {
     if (!is_dir($d)) @mkdir($d, 0755, true);
 }
 $pdo           = get_db();
 $master_prompt = init_master_prompt($pdo);
+$api_key_count = count($GLOBALS['api_keys']);
+$masked_keys   = array_map('mask_secret', $GLOBALS['api_keys']);
 $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
     . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/');
@@ -909,177 +990,260 @@ $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'htt
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aether 3.0 — Agent Autonome PHP</title>
+<title>Autoresearch — Agent autonome PHP</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <style>
   :root {
-    --bg: #06060f;
-    --bg2: #0d0d1f;
-    --bg3: #13132a;
-    --border: #1e1e3f;
-    --accent: #00e5ff;
-    --accent2: #7c3aed;
-    --green: #00ff88;
-    --red: #ff4466;
-    --orange: #ff9900;
-    --text: #c8d6f0;
-    --text-dim: #6b7aaa;
-    --font: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    --page: #070709;
+    --panel: #111114;
+    --panel-soft: #18181c;
+    --line: #2a2a30;
+    --line-strong: #3a3a42;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --brand: #e11d48;
+    --brand-strong: #be123c;
+    --green: #f4f4f5;
+    --red: #fb7185;
+    --orange: #f59e0b;
+    --shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+    --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: var(--font);
-    background: var(--bg);
+    background:
+      linear-gradient(180deg, rgba(225, 29, 72, 0.08), transparent 260px),
+      var(--page);
     color: var(--text);
     min-height: 100vh;
-    padding: 24px;
-    font-size: 13px;
-    line-height: 1.6;
-    background-image: radial-gradient(ellipse at 20% 10%, #0a0a2a 0%, transparent 60%),
-                      radial-gradient(ellipse at 80% 90%, #0d0020 0%, transparent 60%);
+    padding: 28px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .app-shell {
+    max-width: 1280px;
+    margin: 0 auto;
   }
   header {
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 16px;
-    margin-bottom: 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 16px;
+    box-shadow: var(--shadow);
   }
+  .brand-block { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: rgba(225, 29, 72, 0.12);
+    color: var(--brand);
+    border: 1px solid rgba(225, 29, 72, 0.42);
+    flex: 0 0 auto;
+  }
+  .brand-mark .icon { margin-right: 0; }
   header h1 {
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--accent);
-    letter-spacing: -0.5px;
+    font-size: 22px;
+    font-weight: 750;
+    letter-spacing: 0;
+    line-height: 1.1;
   }
-  header h1 span { color: var(--accent2); }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .badge-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .badge {
-    background: var(--accent2);
-    color: #fff;
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 12px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+    background: var(--panel-soft);
+    color: var(--text);
+    border: 1px solid var(--line);
+    font-size: 12px;
+    padding: 5px 9px;
+    border-radius: 6px;
   }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .badge.ok-badge { color: #fff; background: rgba(225, 29, 72, 0.16); border-color: rgba(225, 29, 72, 0.48); }
+  .icon { margin-right: 7px; width: 1.1em; text-align: center; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr); gap: 16px; margin-bottom: 16px; }
   .card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px;
+    box-shadow: var(--shadow);
   }
   .card h3 {
-    font-size: 11px;
+    font-size: 13px;
+    font-weight: 750;
     text-transform: uppercase;
-    letter-spacing: 2px;
-    color: var(--text-dim);
-    margin-bottom: 12px;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    margin-bottom: 14px;
   }
   textarea, input[type=text] {
     width: 100%;
-    background: var(--bg3);
-    border: 1px solid var(--border);
+    background: #0b0b0d;
+    border: 1px solid var(--line-strong);
     color: var(--text);
     font-family: var(--font);
-    font-size: 13px;
-    padding: 12px;
-    border-radius: 8px;
+    font-size: 14px;
+    padding: 11px 12px;
+    border-radius: 6px;
     resize: vertical;
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, box-shadow 0.2s;
   }
-  textarea:focus, input:focus { border-color: var(--accent); }
+  textarea:focus, input:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.22);
+  }
+  textarea::placeholder, input::placeholder { color: #71717a; }
+  .config-card { grid-column: 1 / -1; }
+  .config-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .config-form .full { grid-column: 1 / -1; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .inline-check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; min-height: 40px; }
+  .inline-check input { width: auto; }
   .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   button {
-    background: var(--bg3);
+    background: #151519;
     color: var(--text);
-    border: 1px solid var(--border);
+    border: 1px solid var(--line-strong);
     font-family: var(--font);
-    font-size: 12px;
-    padding: 9px 18px;
-    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 650;
+    padding: 9px 13px;
+    border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
   }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
-  button.primary:hover { background: #6d28d9; }
+  button:hover { background: #1f1f24; border-color: #52525b; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
   .output-box {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    min-height: 200px;
-    max-height: 70vh;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px;
+    min-height: 220px;
+    max-height: 72vh;
     overflow-y: auto;
+    box-shadow: var(--shadow);
   }
   pre, .response {
-    background: var(--bg3);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    background: #050506;
+    color: #f4f4f5;
+    border: 1px solid #2a2a30;
+    border-radius: 6px;
     padding: 12px;
     overflow-x: auto;
     white-space: pre-wrap;
-    word-break: break-all;
+    word-break: break-word;
+    font-family: var(--mono);
     font-size: 12px;
-    line-height: 1.5;
-    margin: 8px 0;
-    max-height: 400px;
+    line-height: 1.55;
+    margin: 10px 0;
+    max-height: 420px;
     overflow-y: auto;
   }
-  code { color: var(--accent); font-family: var(--font); }
-  .ok   { color: var(--green); }
-  .err  { color: var(--red); }
-  .warn { color: var(--orange); }
-  .success { color: var(--green); font-size: 15px; }
-  h2 { color: var(--accent); font-size: 15px; margin: 16px 0 8px; }
-  h3 { color: var(--accent2); font-size: 13px; margin: 12px 0 6px; }
-  h4 { color: var(--text-dim); font-size: 12px; margin: 8px 0 4px; }
+  code { color: var(--brand); font-family: var(--mono); font-size: 0.95em; }
+  .ok, .status-ok { color: var(--green); }
+  .err, .status-err { color: var(--red); }
+  .warn, .status-pend { color: var(--orange); }
+  .success { color: var(--green); font-weight: 700; }
+  h2 { color: var(--text); font-size: 18px; margin: 4px 0 12px; }
+  h3 { color: var(--text); font-size: 16px; margin: 14px 0 8px; }
+  h4 { color: var(--muted); font-size: 14px; margin: 10px 0 6px; }
   ul { padding-left: 20px; }
   li { margin: 4px 0; }
-  .agent {
-    border-left: 3px solid var(--accent2);
-    padding-left: 12px;
-    margin: 8px 0;
-    background: rgba(124,58,237,0.05);
-    border-radius: 0 8px 8px 0;
+  .agent, .correction-loop {
+    border-left: 3px solid var(--brand);
+    padding: 12px 14px;
+    margin: 10px 0;
+    background: rgba(225, 29, 72, 0.08);
+    border-radius: 0 6px 6px 0;
   }
-  .correction-loop { border-left: 3px solid var(--accent); padding-left: 12px; margin: 8px 0; }
-  .iteration { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 6px 0; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
-  th { background: var(--bg3); color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
-  tr:hover td { background: rgba(0,229,255,0.03); }
-  .status-ok   { color: var(--green); }
-  .status-err  { color: var(--red); }
-  .status-pend { color: var(--orange); }
-  hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+  .iteration { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 8px 0; background: #0b0b0d; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #0b0b0d; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: var(--panel-soft); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  tr:hover td { background: rgba(225, 29, 72, 0.08); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 20px 0; }
+  .footer-note { margin-top: 18px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 860px) {
+    body { padding: 14px; }
+    header { align-items: flex-start; flex-direction: column; }
+    .badge-row { justify-content: flex-start; }
+    .grid, .config-form { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
+<main class="app-shell">
 <header>
-  <h1>🧠 Aether <span>3.0</span></h1>
-  <span class="badge">Autonomous AI</span>
-  <span class="badge" style="background:var(--accent);color:#000;">PHP 8.3</span>
+  <div class="brand-block">
+    <div class="brand-mark"><?= icon('magnifying-glass-chart', '') ?></div>
+    <div>
+      <h1>Autoresearch</h1>
+      <p class="subtitle">Génération et validation d'applications PHP avec Mistral</p>
+    </div>
+  </div>
+  <div class="badge-row">
+    <span class="badge <?= $api_key_count > 0 ? 'ok-badge' : '' ?>"><?= $api_key_count > 0 ? 'API configurée' : 'API à configurer' ?></span>
+    <span class="badge">PHP 8.3+</span>
+    <span class="badge">SQLite</span>
+  </div>
 </header>
 
 <div class="grid">
+  <div class="card config-card">
+    <h3><?= icon('gear') ?>Configuration API</h3>
+    <form method="post" class="config-form">
+      <input type="hidden" name="mode" value="config">
+      <input type="text" name="endpoint" placeholder="Endpoint Mistral" value="<?= htmlspecialchars($GLOBALS['endpoint']) ?>">
+      <label class="inline-check">
+        <input type="checkbox" name="clear_api_keys" value="1">
+        Supprimer les clés enregistrées
+      </label>
+      <textarea class="full" name="api_keys_input" rows="3" placeholder="Colle ta ou tes clés Mistral ici, une par ligne. Laisse vide pour conserver les clés actuelles."></textarea>
+      <div class="full">
+        <button type="submit" class="primary"><?= icon('floppy-disk') ?>Enregistrer la configuration</button>
+      </div>
+      <p class="hint full">
+        Statut: <?= $api_key_count > 0 ? "<span class='ok'>{$api_key_count} clé(s) configurée(s)</span>" : "<span class='warn'>aucune clé configurée</span>" ?>
+        <?php if (!empty($masked_keys)): ?>
+          — <?= htmlspecialchars(implode(', ', $masked_keys)) ?>
+        <?php endif; ?>
+      </p>
+    </form>
+  </div>
+
   <div class="card">
-    <h3>🚀 Mission Control</h3>
+    <h3><?= icon('wand-magic-sparkles') ?>Créer</h3>
     <form method="post">
-      <textarea name="user_input" rows="5" placeholder="Ex: Crée une application de gestion de tâches avec catégories, priorités, dates d'échéance, interface sombre moderne..."></textarea>
-      <input type="text" name="project_name" placeholder="Nom du projet (ex: todo_app)" style="margin-top:8px;" value="<?= htmlspecialchars($_POST['project_name'] ?? '') ?>">
+      <textarea name="user_input" rows="7" placeholder="Décris l'application à produire: objectif, écrans, données, règles métier, niveau de finition attendu..."></textarea>
+      <input type="text" name="project_name" placeholder="Nom du projet, par exemple crm_interne" style="margin-top:10px;" value="<?= htmlspecialchars($_POST['project_name'] ?? '') ?>">
+      <p class="hint">Les projets sont générés dans <code>generated_apps/</code> avec un rapport de validation.</p>
       <div class="btn-row">
-        <button type="submit" name="mode" value="autonomous" class="primary">🤖 Mode Autonome</button>
-        <button type="submit" name="mode" value="chat">💬 Chat</button>
-        <button type="submit" name="mode" value="websearch">🌐 Web Search</button>
-        <button type="submit" name="mode" value="self_improve">🔄 Auto-Amélioration</button>
+        <button type="submit" name="mode" value="autonomous" class="primary"><?= icon('robot') ?>Lancer le pipeline</button>
+        <button type="submit" name="mode" value="chat"><?= icon('comments') ?>Chat</button>
+        <button type="submit" name="mode" value="websearch"><?= icon('globe') ?>Recherche</button>
+        <button type="submit" name="mode" value="self_improve"><?= icon('rotate') ?>Optimiser le prompt</button>
       </div>
     </form>
   </div>
 
   <div class="card">
-    <h3>📊 Statistiques</h3>
+    <h3><?= icon('chart-simple') ?>Statistiques</h3>
     <?php
     $stats_files   = $pdo->query("SELECT COUNT(*) FROM generated_files")->fetchColumn();
     $stats_ok      = $pdo->query("SELECT COUNT(*) FROM generated_files WHERE validation_status LIKE '%OK%'")->fetchColumn();
@@ -1113,14 +1277,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $project_name = 'project_' . date('Ymd_His');
     }
 
-    stream_html("<h2>Mode: " . htmlspecialchars(strtoupper($mode)) . " — Projet: <code>{$project_name}</code></h2>");
+    if ($mode === 'config') {
+        stream_html("<h2>Mode: CONFIGURATION API</h2>");
+    } else {
+        stream_html("<h2>Mode: " . htmlspecialchars(strtoupper($mode)) . " — Projet: <code>{$project_name}</code></h2>");
+    }
 
     switch ($mode) {
+        case 'config':
+            [$ok, $message] = save_app_config(
+                $_POST['endpoint'] ?? $GLOBALS['endpoint'],
+                $_POST['api_keys_input'] ?? '',
+                isset($_POST['clear_api_keys'])
+            );
+            $class = $ok ? 'success' : 'err';
+            stream_html("<p class='{$class}'>" . htmlspecialchars($message) . "</p>");
+            stream_html("<p class='hint'>Recharge la page pour voir le statut mis à jour dans le panneau de configuration.</p>");
+            break;
+
         case 'websearch':
             if (empty($user_input)) {
                 stream_html("<p class='warn'>Entrez une requête de recherche.</p>");
             } else {
-                stream_html("<h3>🌐 Recherche: " . htmlspecialchars($user_input) . "</h3>");
+                stream_html("<h3>" . icon('globe') . "Recherche: " . htmlspecialchars($user_input) . "</h3>");
                 $search = agent_web_search($user_input);
                 stream_html("<pre>" . htmlspecialchars($search) . "</pre>");
                 // Enrichir avec Mistral
@@ -1128,13 +1307,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ['role' => 'system', 'content' => "Analyse ces résultats de recherche web et fournis une synthèse utile pour un développeur PHP."],
                     ['role' => 'user',   'content' => "Résultats bruts:\n$search\n\nQuestion: $user_input"],
                 ], 'analysis', 0.5, 4096);
-                stream_html("<h4>💡 Analyse Aether :</h4><pre>" . htmlspecialchars($enrich) . "</pre>");
+                stream_html("<h4>" . icon('lightbulb') . "Analyse Autoresearch :</h4><pre>" . htmlspecialchars($enrich) . "</pre>");
                 $pdo->prepare("INSERT INTO memory (type, content, result) VALUES (?,?,?)")->execute(['websearch', $user_input, $search]);
             }
             break;
 
         case 'self_improve':
-            stream_html("<h3>🔄 Auto-amélioration du prompt maître...</h3>");
+            stream_html("<h3>" . icon('rotate') . "Auto-amélioration du prompt maître...</h3>");
             $result = self_improve_prompt();
             stream_html("<p>" . htmlspecialchars($result) . "</p>");
             // Afficher les dernières améliorations
@@ -1152,10 +1331,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (empty($user_input)) {
                 stream_html("<p class='warn'>Entrez un objectif pour le mode autonome.</p>");
             } else {
-                stream_html("<h3>🤖 Lancement du pipeline autonome multi-agents...</h3>");
+                stream_html("<h3>" . icon('robot') . "Lancement du pipeline autonome multi-agents...</h3>");
 
                 // Phase 1 : Recherche de contexte
-                stream_html("<div class='agent'><h4>🌐 Agent Recherche</h4>");
+                stream_html("<div class='agent'><h4>" . icon('globe') . "Agent Recherche</h4>");
                 $context = agent_web_search($user_input);
                 stream_html("<p>Contexte web récupéré: " . strlen($context) . " chars</p></div>");
 
@@ -1166,7 +1345,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $result = agent_generate_project($user_input, $project_name, $architecture, $base_url);
 
                 // Phase 4 : Rapport final
-                stream_html("<hr><h3>📋 Rapport Final — Projet: {$project_name}</h3>");
+                stream_html("<hr><h3>" . icon('clipboard-list') . "Rapport Final — Projet: {$project_name}</h3>");
                 $files = $pdo->prepare("SELECT * FROM generated_files WHERE app_name=? ORDER BY id");
                 $files->execute([$project_name]);
                 $all_files = $files->fetchAll();
@@ -1183,18 +1362,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($result['success']) {
                     $url = $base_url . '/generated_apps/' . $project_name . '/index.php';
-                    stream_html("<p class='success'>🎉 Projet généré et validé à 100% !</p>");
-                    stream_html("<p>🔗 URL: <a href='{$url}' target='_blank' style='color:var(--accent)'>{$url}</a></p>");
+                    stream_html("<p class='success'>" . icon('trophy') . "Projet généré et validé à 100% !</p>");
+                    stream_html("<p>" . icon('link') . "URL: <a href='{$url}' target='_blank' style='color:var(--accent)'>{$url}</a></p>");
                 } else {
-                    stream_html("<p class='warn'>⚠ Projet partiellement validé. Vérification manuelle recommandée.</p>");
-                    stream_html("<p>📁 Dossier: <code>generated_apps/{$project_name}/</code></p>");
+                    stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Projet partiellement validé. Vérification manuelle recommandée.</p>");
+                    stream_html("<p>" . icon('folder') . "Dossier: <code>generated_apps/{$project_name}/</code></p>");
                 }
 
                 // Phase 5 : Auto-amélioration si beaucoup d'erreurs
                 $err_count = $pdo->prepare("SELECT COUNT(*) FROM generated_files WHERE app_name=? AND last_error IS NOT NULL");
                 $err_count->execute([$project_name]);
                 if ((int)$err_count->fetchColumn() > 2) {
-                    stream_html("<p>🔄 Déclenchement automatique de l'auto-amélioration (> 2 erreurs)...</p>");
+                    stream_html("<p>" . icon('rotate') . "Déclenchement automatique de l'auto-amélioration (> 2 erreurs)...</p>");
                     $improve_result = self_improve_prompt();
                     stream_html("<p>" . htmlspecialchars($improve_result) . "</p>");
                 }
@@ -1215,7 +1394,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ====================================================================
 // AFFICHAGE DES PROJETS RÉCENTS
 // ====================================================================
-echo "<hr><h3>📁 Projets Récents</h3>";
+echo "<hr><h3>" . icon('folder-open') . "Projets Récents</h3>";
 $projects = $pdo->query("SELECT * FROM projects ORDER BY id DESC LIMIT 10")->fetchAll();
 if (!empty($projects)) {
     echo "<table><tr><th>Nom</th><th>Statut</th><th>Fichiers</th><th>Créé le</th></tr>";
@@ -1234,7 +1413,7 @@ if (!empty($projects)) {
 }
 
 // Mémoire récente
-echo "<hr><h3>📜 Mémoire Récente</h3>";
+echo "<hr><h3>" . icon('scroll') . "Mémoire Récente</h3>";
 $memories = $pdo->query("SELECT * FROM memory ORDER BY id DESC LIMIT 6")->fetchAll();
 foreach ($memories as $m) {
     echo "<small class='warn'>[{$m['timestamp']}]</small> <strong>{$m['type']}</strong><br>";
@@ -1243,10 +1422,10 @@ foreach ($memories as $m) {
 ?>
 </div>
 
-<p style="margin-top:20px; color:var(--text-dim); font-size:11px;">
-  Aether 3.0 • PHP 8.3 + LiteSpeed + SQLite WAL • Modèles Mistral OK uniquement •
-  Boucle infinie jusqu'à 100% • generated_apps/ • logs/
+<p class="footer-note">
+  Autoresearch • PHP + SQLite WAL • Mistral • Sortie dans generated_apps/ • Journaux dans logs/
 </p>
 
+</main>
 </body>
 </html>

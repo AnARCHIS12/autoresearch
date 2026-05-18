@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Autoresearch
+Comment=Installer et demarrer Autoresearch
+Exec=sh -c 'cd "/home/anar/Bureau/autoresearch" && ./demarrer-autoresearch.sh'
+Path=/home/anar/Bureau/autoresearch
+Terminal=true
+Icon=applications-development
+Categories=Development;

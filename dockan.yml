@@ -1,0 +1,10 @@
+name: autoresearch
+services:
+  web:
+    build: .
+    image: autoresearch:latest
+    isolation: bubblewrap
+    ports:
+      - 8010:8010
+    restart: always
+    healthcheck: CMD-SHELL curl -f http://127.0.0.1:8010/index.php
