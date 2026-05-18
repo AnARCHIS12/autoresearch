@@ -768,7 +768,7 @@ function auto_correct_loop(
     array  $messages,
     string $project_name,
     string $base_url,
-    int    $max_iterations = 20
+    int    $max_iterations = 3
 ): array {
     $pdo        = get_db();
     $current    = $initial_response;
@@ -803,27 +803,22 @@ function auto_correct_loop(
             continue;
         }
 
-        // Tester les fichiers PHP
+        // Valider localement les fichiers extraits. Ne pas appeler l'URL HTTP de
+        // l'app pendant la génération: le serveur PHP local est mono-requête et
+        // cela bloque l'interface dans Dockan.
         $errors = [];
         $ok_count = 0;
-        $total_php = 0;
 
         foreach ($saved as $file) {
-            if ($file['lang'] !== 'php') {
+            if ($file['valid']) {
                 $ok_count++;
-                continue;
-            }
-            $total_php++;
-            $test = test_php_file_http($file['full_path'], $base_url);
-            if ($test['success']) {
-                $ok_count++;
-                $pdo->prepare("UPDATE generated_files SET validation_status='HTTP 200 OK' WHERE file_path=?")->execute([$file['path']]);
-                stream_html("<span class='ok'>" . icon('circle-check') . "{$file['path']} — HTTP {$test['code']}</span><br>");
+                $pdo->prepare("UPDATE generated_files SET validation_status=? WHERE file_path=?")->execute([$file['msg'], $file['path']]);
+                stream_html("<span class='ok'>" . icon('circle-check') . "{$file['path']} — {$file['msg']}</span><br>");
             } else {
-                $errors[] = "Fichier `{$file['path']}` ERREUR: {$test['error']}";
+                $errors[] = "Fichier `{$file['path']}` ERREUR: {$file['msg']}";
                 $pdo->prepare("UPDATE generated_files SET validation_status=?, last_error=?, attempts=attempts+1 WHERE file_path=?")
-                    ->execute(["ERREUR: {$test['error']}", $test['error'], $file['path']]);
-                stream_html("<span class='err'>" . icon('circle-xmark') . "{$file['path']} — {$test['error']}</span><br>");
+                    ->execute(["ERREUR: {$file['msg']}", $file['msg'], $file['path']]);
+                stream_html("<span class='err'>" . icon('circle-xmark') . "{$file['path']} — {$file['msg']}</span><br>");
             }
         }
 
@@ -1099,12 +1094,13 @@ function mode_chat(string $user_input, string $base_url): void {
         }
         stream_html("</ul>");
 
-        // Test HTTP des PHP
+        // Validation locale uniquement: en serveur PHP local, un test HTTP
+        // vers soi-même peut bloquer la requête en cours.
         foreach ($result['saved'] as $f) {
             if ($f['lang'] === 'php') {
-                $test = test_php_file_http($f['full_path'], $base_url);
-                $status_icon = $test['success'] ? icon('circle-check') : icon('circle-xmark');
-                stream_html("<p>{$status_icon} Test HTTP {$f['path']}: HTTP {$test['code']}</p>");
+                $status_icon = $f['valid'] ? icon('circle-check') : icon('circle-xmark');
+                $class = $f['valid'] ? 'ok' : 'err';
+                stream_html("<p class='{$class}'>{$status_icon} Validation locale {$f['path']}: " . htmlspecialchars($f['msg']) . "</p>");
             }
         }
     }
