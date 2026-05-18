@@ -1,4 +1,7 @@
+data/
+generated_apps/
 logs/
+.runtime/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
