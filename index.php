@@ -518,6 +518,14 @@ function close_curl_handle($ch): void {
     }
 }
 
+function is_api_error_response(string $response): bool {
+    return str_starts_with(trim($response), 'ERREUR:');
+}
+
+function has_api_keys(): bool {
+    return !empty(array_values(array_filter($GLOBALS['api_keys'] ?? [])));
+}
+
 // =====================================================================
 // VALIDATION DU CODE
 // =====================================================================
@@ -668,13 +676,19 @@ function auto_correct_loop(
         $iteration++;
         stream_html("<div class='iteration'><strong>Itération $iteration/$max_iterations</strong>");
 
+        if (is_api_error_response($current)) {
+            stream_html("<p class='err'>" . icon('circle-xmark') . htmlspecialchars($current) . "</p></div>");
+            break;
+        }
+
         // Extraire et sauvegarder les fichiers
         $result    = extract_and_save_files($current, $project_name);
         $saved     = $result['saved'];
         $all_files = array_merge($all_files, $saved);
 
         if (empty($saved)) {
-            stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Aucun fichier extrait. Tentative de re-génération...</p>");
+            stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Aucun fichier extrait.</p>");
+            stream_html("<pre>" . htmlspecialchars(substr($current, 0, 1200)) . "</pre>");
             // Demander à l'IA de reformuler avec les balises correctes
             $messages[] = ['role' => 'assistant', 'content' => $current];
             $messages[] = ['role' => 'user', 'content' => "Aucun fichier n'a pu être extrait. Utilise OBLIGATOIREMENT le format exact:\n<code language=\"php\" path=\"{$project_name}/index.php\">/* ton code */</code>\nRefais la réponse complète avec TOUS les fichiers."];
@@ -865,6 +879,11 @@ PROMPT
         ->execute(['generation', $user_request, substr($response, 0, 500), json_encode(['project' => $project_name])]);
 
     stream_html("<p>" . icon('circle-check') . "Génération initiale reçue (" . strlen($response) . " chars)</p></div>");
+
+    if (is_api_error_response($response)) {
+        stream_html("<p class='err'>" . icon('circle-xmark') . htmlspecialchars($response) . "</p>");
+        return ['files' => [], 'success' => false];
+    }
 
     // Lancer la boucle de correction infinie
     return auto_correct_loop($response, $messages, $project_name, $base_url);
@@ -1316,16 +1335,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $search = agent_web_search($user_input);
                 stream_html("<pre>" . htmlspecialchars($search) . "</pre>");
                 // Enrichir avec Mistral
-                $enrich = call_mistral([
-                    ['role' => 'system', 'content' => "Analyse ces résultats de recherche web et fournis une synthèse utile pour un développeur PHP."],
-                    ['role' => 'user',   'content' => "Résultats bruts:\n$search\n\nQuestion: $user_input"],
-                ], 'analysis', 0.5, 4096);
-                stream_html("<h4>" . icon('lightbulb') . "Analyse Autoresearch :</h4><pre>" . htmlspecialchars($enrich) . "</pre>");
+                if (has_api_keys()) {
+                    $enrich = call_mistral([
+                        ['role' => 'system', 'content' => "Analyse ces résultats de recherche web et fournis une synthèse utile pour un développeur PHP."],
+                        ['role' => 'user',   'content' => "Résultats bruts:\n$search\n\nQuestion: $user_input"],
+                    ], 'analysis', 0.5, 4096);
+                    stream_html("<h4>" . icon('lightbulb') . "Analyse Autoresearch :</h4><pre>" . htmlspecialchars($enrich) . "</pre>");
+                } else {
+                    stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Ajoute une clé Mistral dans Configuration API pour obtenir l'analyse IA.</p>");
+                }
                 $pdo->prepare("INSERT INTO memory (type, content, result) VALUES (?,?,?)")->execute(['websearch', $user_input, $search]);
             }
             break;
 
         case 'self_improve':
+            if (!has_api_keys()) {
+                stream_html("<p class='err'>" . icon('circle-xmark') . "Ajoute une clé Mistral dans Configuration API avant d'utiliser l'auto-amélioration.</p>");
+                break;
+            }
             stream_html("<h3>" . icon('rotate') . "Auto-amélioration du prompt maître...</h3>");
             $result = self_improve_prompt();
             stream_html("<p>" . htmlspecialchars($result) . "</p>");
@@ -1343,6 +1370,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'autonomous':
             if (empty($user_input)) {
                 stream_html("<p class='warn'>Entrez un objectif pour le mode autonome.</p>");
+            } elseif (!has_api_keys()) {
+                stream_html("<p class='err'>" . icon('circle-xmark') . "Ajoute une clé Mistral dans Configuration API avant de lancer le mode autonome.</p>");
             } else {
                 stream_html("<h3>" . icon('robot') . "Lancement du pipeline autonome multi-agents...</h3>");
 
@@ -1397,6 +1426,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         default:
             if (empty($user_input)) {
                 stream_html("<p class='warn'>Entrez un message.</p>");
+            } elseif (!has_api_keys()) {
+                stream_html("<p class='err'>" . icon('circle-xmark') . "Ajoute une clé Mistral dans Configuration API avant d'utiliser le chat.</p>");
             } else {
                 mode_chat($user_input, $base_url);
             }
