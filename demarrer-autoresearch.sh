@@ -115,7 +115,7 @@ start_with_php() {
   if port_is_open; then
     return 0
   fi
-  nohup php -S "127.0.0.1:${PORT}" -t "$APP_DIR" > "$APP_DIR/logs/php-server.log" 2>&1 &
+  nohup php -S "127.0.0.1:${PORT}" -t "$APP_DIR" "$APP_DIR/index.php" > "$APP_DIR/logs/php-server.log" 2>&1 &
   sleep 2
   port_is_open || fail "Le serveur PHP n'a pas demarre. Consultez logs/php-server.log."
 }

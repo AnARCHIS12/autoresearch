@@ -5,4 +5,4 @@ WORKDIR /app
 COPY . /app
 EXPOSE 8010
 VOLUME ["/app/data", "/app/generated_apps", "/app/logs"]
-CMD php -S 0.0.0.0:8010 -t .
+CMD php -S 0.0.0.0:8010 -t . index.php

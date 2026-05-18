@@ -121,6 +121,13 @@ function icon(string $name, string $extra_class = ''): string {
     return "<i class=\"{$class}\" aria-hidden=\"true\"></i>";
 }
 
+function app_base_path(): string {
+    $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/index.php'));
+    $dir = str_replace('\\', '/', dirname($script));
+    $dir = trim($dir, '/.');
+    return $dir === '' ? '' : '/' . $dir;
+}
+
 function ca_bundle_path(): string {
     foreach ([
         __DIR__ . '/.dockan/tls-ca-bundle.pem',
@@ -1310,7 +1317,7 @@ $api_key_count = count($GLOBALS['api_keys']);
 $masked_keys   = array_map('mask_secret', $GLOBALS['api_keys']);
 $base_url      = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
-    . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/');
+    . app_base_path();
 
 serve_generated_app_request();
 

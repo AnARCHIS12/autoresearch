@@ -121,7 +121,7 @@ if (-not (Test-App)) {
     Stop-PortProcess
     $StdoutLog = Join-Path $LogDir "php-server.out.log"
     $StderrLog = Join-Path $LogDir "php-server.err.log"
-    Start-Process -FilePath "php" -ArgumentList @("-c", "`"$PhpIni`"", "-S", "127.0.0.1:$Port", "-t", "`"$AppDir`"") -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog
+    Start-Process -FilePath "php" -ArgumentList @("-c", "`"$PhpIni`"", "-S", "127.0.0.1:$Port", "-t", "`"$AppDir`"", "`"$AppDir\index.php`"") -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog
     Start-Sleep -Seconds 2
 }
 
