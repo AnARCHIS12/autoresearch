@@ -920,7 +920,7 @@ function agent_web_search(string $query): string {
 }
 
 // =====================================================================
-// AUTO-AMÉLIORATION DU PROMPT MAÎTRE
+// AUTO-AMÉLIORATION DES INSTRUCTIONS DE GÉNÉRATION
 // =====================================================================
 function self_improve_prompt(): string {
     $pdo            = get_db();
@@ -1353,7 +1353,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 stream_html("<p class='err'>" . icon('circle-xmark') . "Ajoute une clé Mistral dans Configuration API avant d'utiliser l'auto-amélioration.</p>");
                 break;
             }
-            stream_html("<h3>" . icon('rotate') . "Auto-amélioration du prompt maître...</h3>");
+            stream_html("<h3>" . icon('rotate') . "Optimisation des instructions de génération...</h3>");
             $result = self_improve_prompt();
             stream_html("<p>" . htmlspecialchars($result) . "</p>");
             // Afficher les dernières améliorations
@@ -1406,9 +1406,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $url = $base_url . '/generated_apps/' . $project_name . '/index.php';
                     stream_html("<p class='success'>" . icon('trophy') . "Projet généré et validé à 100% !</p>");
                     stream_html("<p>" . icon('link') . "URL: <a href='{$url}' target='_blank' style='color:var(--accent)'>{$url}</a></p>");
-                } else {
+                } elseif (!empty($all_files)) {
                     stream_html("<p class='warn'>" . icon('triangle-exclamation') . "Projet partiellement validé. Vérification manuelle recommandée.</p>");
                     stream_html("<p>" . icon('folder') . "Dossier: <code>generated_apps/{$project_name}/</code></p>");
+                } else {
+                    stream_html("<p class='err'>" . icon('circle-xmark') . "Aucun fichier n'a été généré. Vérifie la clé API et la réponse affichée plus haut.</p>");
                 }
 
                 // Phase 5 : Auto-amélioration si beaucoup d'erreurs
