@@ -199,6 +199,41 @@ function select_model(string $task = 'chat', int $context_tokens = 0): string {
     };
 }
 
+function select_model_candidates(string $task = 'chat', int $context_tokens = 0): array {
+    $m = $GLOBALS['models'];
+
+    if ($context_tokens > 45000) {
+        return array_values(array_unique([
+            $m['large_ctx'],
+            $m['large_ctx2'],
+            $m['chat'],
+        ]));
+    }
+
+    $models = match($task) {
+        'code' => [
+            $m['code'],
+            $m['code_alt'],
+            $m['code_small'],
+            $m['chat'],
+        ],
+        'architect' => [
+            $m['architect'],
+            $m['code_small'],
+            $m['chat'],
+        ],
+        'reasoning', 'planning', 'analysis' => [
+            select_model($task, $context_tokens),
+            $m['chat'],
+        ],
+        default => [
+            select_model($task, $context_tokens),
+        ],
+    };
+
+    return array_values(array_unique(array_filter($models)));
+}
+
 // =====================================================================
 // BASE DE DONNÉES — INITIALISATION (FIX UNIQUE CONSTRAINT)
 // =====================================================================
@@ -342,93 +377,100 @@ function call_mistral(
     int    $max_tokens  = 16384,
     int    $retry       = 3
 ): string {
-    $model = select_model($task, estimate_tokens($messages));
+    $model_candidates = select_model_candidates($task, estimate_tokens($messages));
     $api_keys = array_values(array_filter($GLOBALS['api_keys']));
     if (empty($api_keys)) {
         return "ERREUR: Aucune clé API Mistral configurée. Ouvre le panneau Configuration API et ajoute une clé.";
     }
 
     $last_error = '';
+    $attempted_models = [];
     $endpoint_host = (string)(parse_url($GLOBALS['endpoint'], PHP_URL_HOST) ?? '');
     $endpoint_scheme = strtolower((string)(parse_url($GLOBALS['endpoint'], PHP_URL_SCHEME) ?? 'https'));
     $endpoint_port = (int)(parse_url($GLOBALS['endpoint'], PHP_URL_PORT) ?: ($endpoint_scheme === 'http' ? 80 : 443));
     $curl_resolve = resolve_host_for_curl($endpoint_host, $endpoint_port);
 
-    for ($attempt = 0; $attempt < $retry; $attempt++) {
-        $key_idx = ($GLOBALS['current_key_index'] + $attempt) % count($api_keys);
-        $key     = $api_keys[$key_idx];
+    foreach ($model_candidates as $model) {
+        $attempted_models[] = $model;
 
-        $payload = json_encode([
-            'model'       => $model,
-            'messages'    => $messages,
-            'temperature' => $temperature,
-            'max_tokens'  => $max_tokens,
-            'top_p'       => 0.95,
-        ]);
+        for ($attempt = 0; $attempt < $retry; $attempt++) {
+            $key_idx = ($GLOBALS['current_key_index'] + $attempt) % count($api_keys);
+            $key     = $api_keys[$key_idx];
 
-        $ch = curl_init($GLOBALS['endpoint']);
-        $curl_options = [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $payload,
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $key,
-            ],
-            CURLOPT_TIMEOUT        => 300,
-            CURLOPT_CONNECTTIMEOUT => 30,
-            CURLOPT_USERAGENT      => 'Autoresearch/1.0',
-        ];
-        $ca_bundle = ca_bundle_path();
-        if ($ca_bundle !== '') {
-            $curl_options[CURLOPT_CAINFO] = $ca_bundle;
-        }
-        curl_setopt_array($ch, $curl_options);
-        if (!empty($curl_resolve)) {
-            curl_setopt($ch, CURLOPT_RESOLVE, $curl_resolve);
-        }
+            $payload = json_encode([
+                'model'       => $model,
+                'messages'    => $messages,
+                'temperature' => $temperature,
+                'max_tokens'  => $max_tokens,
+                'top_p'       => 0.95,
+            ]);
 
-        $response  = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curl_err  = curl_error($ch);
-        close_curl_handle($ch);
-
-        if ($curl_err) {
-            $last_error = "Erreur réseau/DNS: $curl_err";
-            aether_log("cURL error (attempt $attempt): $curl_err");
-            sleep(2);
-            continue;
-        }
-
-        if ($http_code === 429) {
-            $last_error = "Quota ou limite Mistral atteinte (HTTP 429).";
-            aether_log("Rate limit (attempt $attempt), sleep 60s...");
-            sleep(60);
-            continue;
-        }
-
-        if ($http_code === 200) {
-            $data = json_decode($response, true);
-            if (json_last_error() === JSON_ERROR_NONE && isset($data['choices'][0]['message']['content'])) {
-                $GLOBALS['current_key_index'] = ($key_idx + 1) % count($api_keys);
-                sleep(1); // respect rate limit 1 req/sec
-                return $data['choices'][0]['message']['content'];
+            $ch = curl_init($GLOBALS['endpoint']);
+            $curl_options = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $payload,
+                CURLOPT_HTTPHEADER     => [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $key,
+                ],
+                CURLOPT_TIMEOUT        => 300,
+                CURLOPT_CONNECTTIMEOUT => 30,
+                CURLOPT_USERAGENT      => 'Autoresearch/1.0',
+            ];
+            $ca_bundle = ca_bundle_path();
+            if ($ca_bundle !== '') {
+                $curl_options[CURLOPT_CAINFO] = $ca_bundle;
             }
-        }
+            curl_setopt_array($ch, $curl_options);
+            if (!empty($curl_resolve)) {
+                curl_setopt($ch, CURLOPT_RESOLVE, $curl_resolve);
+            }
 
-        // Sur 429 ou erreur serveur, changer de clé
-        if ($http_code === 401 || $http_code === 403) {
-            $last_error = "Clé API refusée ou accès modèle interdit (HTTP $http_code).";
-            aether_log("Auth error for key $key_idx (HTTP $http_code): " . substr((string)$response, 0, 300));
-            continue;
-        }
+            $response  = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curl_err  = curl_error($ch);
+            close_curl_handle($ch);
 
-        $last_error = "Erreur API HTTP $http_code: " . trim(substr((string)$response, 0, 220));
-        aether_log("API error HTTP $http_code (attempt $attempt): " . substr($response, 0, 300));
-        sleep(2);
+            if ($curl_err) {
+                $last_error = "Erreur réseau/DNS: $curl_err";
+                aether_log("cURL error on model $model (attempt $attempt): $curl_err");
+                sleep(2);
+                continue;
+            }
+
+            if ($http_code === 429) {
+                $last_error = "Quota ou limite Mistral atteinte (HTTP 429) avec $model.";
+                aether_log("Rate limit on model $model (attempt $attempt), trying next key/model...");
+                sleep(5);
+                continue;
+            }
+
+            if ($http_code === 200) {
+                $data = json_decode($response, true);
+                if (json_last_error() === JSON_ERROR_NONE && isset($data['choices'][0]['message']['content'])) {
+                    $GLOBALS['current_key_index'] = ($key_idx + 1) % count($api_keys);
+                    sleep(1); // respect rate limit 1 req/sec
+                    return $data['choices'][0]['message']['content'];
+                }
+                $last_error = "Réponse Mistral invalide avec $model: " . trim(substr((string)$response, 0, 220));
+                aether_log("Invalid API response on model $model: " . substr((string)$response, 0, 300));
+                continue;
+            }
+
+            if ($http_code === 401 || $http_code === 403) {
+                $last_error = "Clé API refusée ou accès modèle interdit (HTTP $http_code) avec $model.";
+                aether_log("Auth/model access error for key $key_idx on model $model (HTTP $http_code): " . substr((string)$response, 0, 300));
+                break;
+            }
+
+            $last_error = "Erreur API HTTP $http_code avec $model: " . trim(substr((string)$response, 0, 220));
+            aether_log("API error HTTP $http_code on model $model (attempt $attempt): " . substr((string)$response, 0, 300));
+            sleep(2);
+        }
     }
 
-    return "ERREUR: Impossible d'appeler l'API Mistral après $retry tentatives avec le modèle $model. Détail: " . ($last_error ?: "aucun détail reçu.");
+    return "ERREUR: Impossible d'appeler l'API Mistral après essais sur les modèles " . implode(', ', $attempted_models) . ". Détail: " . ($last_error ?: "aucun détail reçu.") . " Vérifie la clé Mistral dans Configuration API.";
 }
 
 // Estimation grossière du nombre de tokens (4 chars ≈ 1 token)
