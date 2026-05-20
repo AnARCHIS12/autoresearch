@@ -2,7 +2,7 @@
   <img src="assets/autoresearch-logo.svg" alt="Autoresearch" width="760">
 </p>
 
-# Crédits 
+# Crédit
 Autoresearch, projet original de LaurentVoanh.
 Merci à toi pour ce projet génial.
 
