@@ -2,6 +2,11 @@
   <img src="assets/autoresearch-logo.svg" alt="Autoresearch" width="760">
 </p>
 
+#Crédits 
+Autoresearch, projet original de LaurentVoanh.
+Merci à toi pour ce projet génial.
+
+
 # Autoresearch
 
 Autoresearch est une interface locale pour generer, sauvegarder et tester des applications PHP/SQLite avec l'API Mistral.
